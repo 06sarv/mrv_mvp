@@ -1,0 +1,36 @@
+{
+    "rooms": {
+        "1": {
+            "room_id": 1,
+            "max_capacity": 20,
+            "latitude": 12.8379,
+            "longitude": 80.1870,
+            "appliances": [
+                {
+                    "appliance_id": 1,
+                    "room_id": 1,
+                    "appliance_type": "AC",
+                    "max_power_watts": 2000,
+                    "adjustable": true,
+                    "number_of_appliances": 2
+                },
+                {
+                    "appliance_id": 2,
+                    "room_id": 1,
+                    "appliance_type": "FAN",
+                    "max_power_watts": 75,
+                    "adjustable": true,
+                    "number_of_appliances": 4
+                },
+                {
+                    "appliance_id": 3,
+                    "room_id": 1,
+                    "appliance_type": "LIGHT",
+                    "max_power_watts": 40,
+                    "adjustable": false,
+                    "number_of_appliances": 6
+                }
+            ]
+        }
+    }
+}
