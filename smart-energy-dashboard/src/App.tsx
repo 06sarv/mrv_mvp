@@ -10,17 +10,9 @@ import RoomSurveillanceView from './components/views/RoomSurveillanceView';
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
-  const [showZoneInsights, setShowZoneInsights] = useState(false);
-
   const handleNavigate = (view: string, roomId?: string) => {
     setActiveTab(view);
-    if (view === 'room-details') {
-      setShowZoneInsights(true);
-    }
     if (roomId) setSelectedRoomId(roomId);
-    else if (view === 'dashboard' || view === 'monitoring') {
-      // Keep selectedRoomId if we want persistent selection
-    }
   };
 
   return (
@@ -28,8 +20,6 @@ function App() {
       <Layout
         activeTab={activeTab}
         setActiveTab={handleNavigate}
-        selectedRoomId={selectedRoomId}
-        showZoneInsights={showZoneInsights}
       >
         {activeTab === 'dashboard' && <Dashboard onNavigate={handleNavigate} />}
         {activeTab === 'monitoring' && <MonitoringView />}
@@ -46,10 +36,7 @@ function App() {
             onBack={() => handleNavigate('room-details', selectedRoomId || undefined)}
           />
         )}
-        {activeTab === 'energy' && <div className="p-8 text-center text-slate-500">Energy Optimization Reports (Coming Soon)</div>}
         {activeTab === 'settings' && <SettingsView />}
-        {activeTab === 'control' && <div className="p-8 text-center text-slate-500">Appliance Control is available in the Dashboard view.</div>}
-        {activeTab === 'alerts' && <div className="p-8 text-center text-slate-500">No new alerts.</div>}
       </Layout>
     </EnergyProvider>
   );

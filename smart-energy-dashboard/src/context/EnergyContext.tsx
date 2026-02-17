@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
-import type { SystemState, Appliance, OccupancyLevel, Notification, OptimizationResult, Action } from '../types';
+import type { SystemState, Appliance, OccupancyLevel, OptimizationResult, Action } from '../types';
 import { supabase } from '../lib/supabase';
 
 
@@ -7,13 +7,11 @@ interface EnergyContextType extends SystemState {
     toggleAppliance: (id: string) => void;
     setApplianceMode: (id: string, isAuto: boolean) => void;
     updateSettings: (settings: Partial<SystemState>) => void;
-    searchQuery: string;
-    setSearchQuery: (query: string) => void;
     setPeopleCount: (count: number) => void;
     setFps: (fps: number) => void;
     systemRooms: any[];
     acceptedActions: Record<string, Set<string>>;
-    acceptAction: (roomId: string, actionId: string, applianceId: string, wattsAffected: number) => void;
+    acceptAction: (roomId: string, actionId: string, systemUuid: string, wattsAffected: number) => void;
 }
 
 const EnergyContext = createContext<EnergyContextType | undefined>(undefined);
@@ -23,7 +21,6 @@ export const EnergyProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     const [occupancyLevel, setOccupancyLevel] = useState<OccupancyLevel>('Low');
     const [roomCapacity, setRoomCapacity] = useState(50);
     const [fps, setFps] = useState(24);
-    const [searchQuery, setSearchQuery] = useState('');
     const [appliances, setAppliances] = useState<Appliance[]>([]);
     const [systemRooms, setSystemRooms] = useState<any[]>([]);
     const [acceptedActions, setAcceptedActions] = useState<Record<string, Set<string>>>({});
@@ -36,14 +33,6 @@ export const EnergyProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         totalSavings: 0,
         costSaved: 0
     });
-
-    const [history, setHistory] = useState([
-        { time: '10:00', peopleCount: 3, energyUsage: 1.2 },
-        { time: '11:00', peopleCount: 8, energyUsage: 2.1 },
-        { time: '12:00', peopleCount: 15, energyUsage: 3.5 },
-    ]);
-
-    const [notifications, setNotifications] = useState<Notification[]>([]);
 
     // -------------------------------------------------------------------------
     // Fetch Room Data from Supabase — ALL appliances start ON
@@ -249,14 +238,16 @@ export const EnergyProvider: React.FC<{ children: ReactNode }> = ({ children }) 
                             people_count: peopleCount,
                             confidence: 0.95
                         },
-                        appliances: room.appliances.map((app: any, idx: number) => ({
-                            appliance_id: idx + 1,  // Unique 1-based index
-                            room_id: parseInt(room.id, 10) || 1,
-                            appliance_type: app.type === 'Light' ? 'LIGHT' : app.type === 'Fan' ? 'FAN' : 'AC',
-                            max_power_watts: app.powerConsumption || 60,
-                            adjustable: true,
-                            number_of_appliances: app.count
-                        })),
+                        appliances: room.appliances
+                            .filter((app: any) => app.type !== 'Other')  // Exclude UPS — not optimizable
+                            .map((app: any, idx: number) => ({
+                                appliance_id: idx + 1,  // Unique 1-based index
+                                room_id: parseInt(room.id, 10) || 1,
+                                appliance_type: app.type === 'Light' ? 'LIGHT' : app.type === 'Fan' ? 'FAN' : 'AC',
+                                max_power_watts: app.powerConsumption || 60,
+                                adjustable: true,
+                                number_of_appliances: app.count
+                            })),
                         // Mahindra Research Valley, Chennai
                         latitude: 12.79,
                         longitude: 80.22
@@ -338,14 +329,6 @@ export const EnergyProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         });
     }, [systemRooms, acceptedActions, optimizationResults]);
 
-    // Trim history / notifications to avoid memory leaks
-    useEffect(() => {
-        if (history.length > 100) setHistory(prev => prev.slice(1));
-    }, [history]);
-    useEffect(() => {
-        if (notifications.length > 5) setNotifications(prev => prev.slice(1));
-    }, [notifications]);
-
     // Update Occupancy Level
     useEffect(() => {
         const percentage = (peopleCount / roomCapacity) * 100;
@@ -376,13 +359,9 @@ export const EnergyProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             occupancyLevel,
             roomCapacity,
             fps,
-            searchQuery,
-            setSearchQuery,
             appliances,
             stats,
-            history,
             optimizationResults,
-            notifications,
             systemRooms,
             acceptedActions,
             acceptAction,

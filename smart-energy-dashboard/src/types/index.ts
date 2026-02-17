@@ -19,12 +19,6 @@ export interface EnergyStats {
     costSaved: number;
 }
 
-export interface HistoryData {
-    time: string;
-    peopleCount: number;
-    energyUsage: number;
-}
-
 export interface SystemState {
     peopleCount: number;
     occupancyLevel: OccupancyLevel;
@@ -32,8 +26,6 @@ export interface SystemState {
     fps: number;
     appliances: Appliance[];
     stats: EnergyStats;
-    history: HistoryData[];
-    notifications: Notification[];
     optimizationResults: Record<string, OptimizationResult>;
     systemRooms: Room[];
 }
@@ -53,13 +45,6 @@ export interface OptimizationResult {
     total_estimated_power_watts: number;
     recommendations: OptimizationRecommendation[];
     optimization_id?: string;
-}
-
-export interface Notification {
-    id: string;
-    type: 'alert' | 'warning' | 'info';
-    message: string;
-    timestamp: Date;
 }
 
 export interface Action {

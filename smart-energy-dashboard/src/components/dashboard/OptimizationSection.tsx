@@ -147,7 +147,8 @@ const RoomCard: React.FC<{
                             onToggle={() => {
                                 // Get the appliance index from the action ID (rec-<1-based-idx>)
                                 const appIdx = parseInt(action.id.replace('rec-', ''), 10) - 1;
-                                const appliance = room.appliances?.[appIdx];
+                                const optimizableAppliances = (room.appliances || []).filter((a: any) => a.type !== 'Other');
+                                const appliance = optimizableAppliances[appIdx];
                                 const systemUuid = appliance?.id || '';
                                 onAcceptAction(action.id, systemUuid, action.wattsAffected || 0);
                             }}
@@ -164,7 +165,7 @@ const RoomCard: React.FC<{
 };
 
 const OptimizationSection: React.FC<{ onNavigate: (view: string, roomId?: string) => void }> = ({ onNavigate }) => {
-    const { peopleCount, searchQuery, optimizationResults, systemRooms, acceptedActions, acceptAction } = useEnergy();
+    const { peopleCount, optimizationResults, systemRooms, acceptedActions, acceptAction } = useEnergy();
     const [filter, setFilter] = useState<'Action Required' | 'All Rooms'>('Action Required');
 
     // Build live rooms with optimization data and accepted state
@@ -180,12 +181,15 @@ const OptimizationSection: React.FC<{ onNavigate: (view: string, roomId?: string
             const apiActions: Action[] = [];
 
             if (result.recommendations) {
+                // Build the same filtered list that was sent to the optimizer (excludes UPS/Other)
+                const optimizableAppliances = (room.appliances || []).filter((a: any) => a.type !== 'Other');
+
                 result.recommendations.forEach(rec => {
                     const recType = rec.appliance_type;
                     const uiType = recType === 'LIGHT' ? 'Light' : recType === 'FAN' ? 'Fan' : recType === 'AC' ? 'AC' : 'Other';
 
-                    // Match appliance by index: appliance_id is 1-based index into room.appliances
-                    const appliance = room.appliances?.[rec.appliance_id - 1];
+                    // appliance_id is 1-based index into the filtered (optimizable) list
+                    const appliance = optimizableAppliances[rec.appliance_id - 1];
 
                     if (rec.status === 'OFF') {
                         // Suggestion: turn this appliance off entirely
@@ -259,12 +263,9 @@ const OptimizationSection: React.FC<{ onNavigate: (view: string, roomId?: string
             ...room,
             occupancy: peopleCount,
             actions: [] as Action[],
-            status: 'Optimization Suggested' as const
+            status: 'Optimal Efficiency' as const // Default to optimal if no data
         };
-    }).filter(room =>
-        room.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        room.id.toLowerCase().includes(searchQuery.toLowerCase())
-    );
+    });
 
     const filteredRooms = filter === 'All Rooms'
         ? liveRooms
