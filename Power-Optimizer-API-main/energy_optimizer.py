@@ -4,6 +4,10 @@ This module remains self-contained (no DB connectivity) and mirrors DB tables
 with dataclasses. It fetches outdoor weather (Google first, Open-Meteo fallback),
 optimizes appliance states using occupancy and temperature heuristics, and
 returns a deterministic recommendation payload suitable for an API layer.
+
+Currently active seating area: MTA_1 (room_id=1).
+Planned: cell-based occupancy — divide the room into spatial cells and activate
+appliance units only in cells where occupants are detected.
 """
 
 from __future__ import annotations
@@ -13,9 +17,79 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from math import ceil
+from math import ceil, floor
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib import error, request
+
+
+# ---------------------------------------------------------------------------
+# Seating area configuration
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SeatingArea:
+    """Represents a named seating area / zone within the building.
+
+    room_id ties this area to a specific Room record.
+    Future fields (e.g. cell_grid_rows, cell_grid_cols) will support
+    cell-based occupancy tracking.
+    """
+    name: str
+    room_id: int
+
+
+# The single active seating area this module manages.
+# room_id is hardcoded to 1; all inputs are validated against this value.
+MTA_1 = SeatingArea(name="MTA_1", room_id=1)
+
+
+# ---------------------------------------------------------------------------
+# AC setpoint formula — T_base
+# ---------------------------------------------------------------------------
+
+# The AC target temperature (setpoint) for both empty and occupied rooms is
+# derived from the outdoor temperature using the formula:
+#
+#   T_base = 25 - floor((T_out - 25) / 4)
+#
+# Clamped to [22, 25]°C, which produces the piecewise behaviour:
+#   T_out <= 28  → T_base = 25
+#   28 < T_out <= 32  → T_base = 24
+#   32 < T_out <= 36  → T_base = 23
+#   T_out > 36   → T_base = 22
+#
+# The hotter it is outside, the lower (cooler) the setpoint — the AC works
+# harder to maintain comfort. When outside temperature is unknown, fall back
+# to 24°C (mid-range).
+
+AC_SETPOINT_FALLBACK_C: float = 24.0
+
+
+def _tbase_formula(outside_temp_c: Optional[float]) -> float:
+    """Return the AC setpoint temperature in °C based on outdoor temperature.
+
+    Uses the unified formula T_base = 25 - floor((T_out - 25) / 4),
+    clamped to [22, 25]°C.
+    """
+    if outside_temp_c is None:
+        return AC_SETPOINT_FALLBACK_C
+    value = 25 - floor((outside_temp_c - 25) / 4)
+    return float(max(22, min(25, value)))
+
+
+def _setpoint_to_level(setpoint_c: float) -> int:
+    """Map a T_base setpoint (22–25°C) to a 1–10 intensity level.
+
+    Cooler setpoint = AC works harder = higher level:
+      25°C → level 1  (lightest load)
+      24°C → level 4
+      23°C → level 7
+      22°C → level 10 (hardest load)
+    """
+    # Linear interpolation: level = 10 - round((setpoint - 22) / 3 * 9)
+    level = 10 - round((setpoint_c - 22.0) / 3.0 * 9.0)
+    return _clamp_level(level)
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +107,7 @@ class Room:
 class Occupancy:
     room_id: int
     people_count: int
-    detected_at: str  # ISO timestamp string for simplicity
+    detected_at: str  # ISO timestamp string
     confidence: float  # 0.0 to 1.0
 
 
@@ -50,11 +124,12 @@ class Appliance:
 @dataclass
 class ApplianceState:
     appliance_id: int
-    appliance_type: str  # Added field for UI
-    status: str  # "ON" or "OFF"
-    level: Optional[int]  # None for non-adjustable or when OFF
+    appliance_type: str
+    status: str               # "ON" or "OFF"
+    level: Optional[int]      # 1-10 intensity; None for non-adjustable or when OFF
+    setpoint_c: Optional[float]  # AC target temperature in °C; None for non-AC or when OFF
     estimated_power_watts: int
-    updated_at: str  # ISO timestamp string
+    updated_at: str           # ISO timestamp string
 
 
 @dataclass
@@ -66,12 +141,17 @@ class WeatherConditions:
 
 LOG = logging.getLogger(__name__)
 
-# Default people-per-unit assumptions for a more realistic split across multiple devices.
+# Default people-per-unit assumptions for a realistic split across multiple devices.
 PEOPLE_PER_UNIT: Dict[str, int] = {
     "AC": 6,
     "FAN": 4,
     "LIGHT": 2,
 }
+
+
+# ---------------------------------------------------------------------------
+# Weather providers
+# ---------------------------------------------------------------------------
 
 
 class GoogleWeatherProvider:
@@ -128,7 +208,7 @@ class GoogleWeatherProvider:
 class OpenMeteoWeatherProvider:
     """Lightweight weather fetcher using the free Open-Meteo API (no key required).
 
-    This keeps us unblocked while you evaluate other providers (e.g., Google).
+    Used as a fallback when the Google provider is unavailable.
     """
 
     BASE_URL = "https://api.open-meteo.com/v1/forecast"
@@ -158,7 +238,6 @@ class OpenMeteoWeatherProvider:
         timestamp = current.get("time") or datetime.now(timezone.utc).isoformat()
 
         humidity = None
-        # Try to read the first hourly humidity value if present.
         hourly = payload.get("hourly") or {}
         humidity_values = hourly.get("relativehumidity_2m")
         if isinstance(humidity_values, list) and humidity_values:
@@ -185,89 +264,143 @@ def optimize_room(
     occupancy: Occupancy,
     appliances: Sequence[Appliance],
     outside_temp_c: Optional[float] = None,
+    seating_area: SeatingArea = MTA_1,
 ) -> List[ApplianceState]:
-    """Recommend appliance states for a room based on occupancy.
+    """Recommend appliance states for a seating area based on occupancy.
 
     Rules applied:
-    - If people_count == 0: everything OFF.
-    - If people_count < room.max_capacity: reduce power proportionally and per-unit.
-    - AC turns ON only when people_count >= 2.
-    - Lights and fans require at least 1 person.
-    - Per-unit capacity by type (people-per-unit) decides how many units to activate.
+    - room.room_id, occupancy.room_id, and all appliance room_ids must match
+      seating_area.room_id (MTA_1 enforces room_id=1).
+    - If people_count == 0:
+        * AC  → ON at a temperature-dependent maintenance level (base load).
+        * All other appliance types → OFF.
+    - If people_count >= 1:
+        * LIGHT and FAN turn ON; level scales with occupancy load.
+        * AC turns ON only when people_count >= 2; level scales with occupancy.
+    - Per-unit capacity (PEOPLE_PER_UNIT) decides how many physical units to activate.
+    - Outdoor temperature nudges the final level via _apply_temperature_bias.
 
-    The function returns a list of ApplianceState recommendations; caller can
-    later persist them to the DB.
+    TODO: extend with cell-based occupancy — map each Appliance unit to a spatial
+    cell and activate only the units covering occupied cells.
+
+    Returns a list of ApplianceState recommendations ready for persistence.
     """
 
-    _validate_inputs(room, occupancy, appliances)
-
-    people = occupancy.people_count
-    now_iso = datetime.now(timezone.utc).isoformat()
+    _validate_inputs(room, occupancy, appliances, seating_area)
 
     if room.max_capacity <= 0:
         raise ValueError("room.max_capacity must be positive")
 
-    # if people < 0:
-    #     raise ValueError("people_count must be non-negative")
+    people = occupancy.people_count
+    now_iso = datetime.now(timezone.utc).isoformat()
 
-    # When empty, everything is off.
+    # ------------------------------------------------------------------
+    # Base-load mode: room is empty — AC holds the temperature, all else OFF.
+    # ------------------------------------------------------------------
     if people == 0:
-        return [
-            ApplianceState(
-                appliance_id=a.appliance_id,
-                appliance_type=a.appliance_type,
-                status="OFF",
-                level=None,
-                estimated_power_watts=0,
-                updated_at=now_iso,
-            )
-            for a in appliances
-        ]
-
-    # Scale between 0 and 1 based on occupancy versus capacity.
-    load_factor = min(1.0, people / room.max_capacity)
-
-    recommendations: List[ApplianceState] = []
-    for appliance in appliances:
-        should_run, level, units_on = _decide_appliance_state(appliance, people, load_factor)
-
-        if not should_run:
-            recommendations.append(
-                ApplianceState(
+        setpoint_c = _tbase_formula(outside_temp_c)
+        maintenance_level = _setpoint_to_level(setpoint_c)
+        LOG.info(
+            "[%s] Empty room — base load AC setpoint=%.0f°C level=%d (outside_temp=%s°C)",
+            seating_area.name,
+            setpoint_c,
+            maintenance_level,
+            f"{outside_temp_c:.1f}" if outside_temp_c is not None else "unknown",
+        )
+        states: List[ApplianceState] = []
+        for appliance in appliances:
+            if appliance.appliance_type.upper() == "AC":
+                estimated_power = _estimate_power(appliance, maintenance_level, units_on=1)
+                states.append(ApplianceState(
+                    appliance_id=appliance.appliance_id,
+                    appliance_type=appliance.appliance_type,
+                    status="ON",
+                    level=maintenance_level,
+                    setpoint_c=setpoint_c,
+                    estimated_power_watts=estimated_power,
+                    updated_at=now_iso,
+                ))
+            else:
+                states.append(ApplianceState(
                     appliance_id=appliance.appliance_id,
                     appliance_type=appliance.appliance_type,
                     status="OFF",
                     level=None,
+                    setpoint_c=None,
                     estimated_power_watts=0,
                     updated_at=now_iso,
-                )
-            )
+                ))
+        return states
+
+    # ------------------------------------------------------------------
+    # Normal occupancy mode
+    # ------------------------------------------------------------------
+    load_factor = min(1.0, people / room.max_capacity)
+    recommendations: List[ApplianceState] = []
+
+    for appliance in appliances:
+        should_run, level, units_on = _decide_appliance_state(appliance, people, load_factor)
+
+        if not should_run:
+            recommendations.append(ApplianceState(
+                appliance_id=appliance.appliance_id,
+                appliance_type=appliance.appliance_type,
+                status="OFF",
+                level=None,
+                setpoint_c=None,
+                estimated_power_watts=0,
+                updated_at=now_iso,
+            ))
             continue
 
         if level is not None:
             level = _apply_temperature_bias(level, outside_temp_c)
 
+        is_ac = appliance.appliance_type.upper() == "AC"
+        setpoint_c = _tbase_formula(outside_temp_c) if is_ac else None
+
         estimated_power = _estimate_power(appliance, level, units_on)
-        recommendations.append(
-            ApplianceState(
-                appliance_id=appliance.appliance_id,
-                appliance_type=appliance.appliance_type,
-                status="ON",
-                level=level,
-                estimated_power_watts=estimated_power,
-                updated_at=now_iso,
-            )
-        )
+        recommendations.append(ApplianceState(
+            appliance_id=appliance.appliance_id,
+            appliance_type=appliance.appliance_type,
+            status="ON",
+            level=level,
+            setpoint_c=setpoint_c,
+            estimated_power_watts=estimated_power,
+            updated_at=now_iso,
+        ))
 
     return recommendations
 
 
-def _validate_inputs(room: Room, occupancy: Occupancy, appliances: Sequence[Appliance]) -> None:
-    if occupancy.room_id != room.room_id:
-        raise ValueError("occupancy.room_id does not match room.room_id")
+def _validate_inputs(
+    room: Room,
+    occupancy: Occupancy,
+    appliances: Sequence[Appliance],
+    seating_area: SeatingArea,
+) -> None:
+    """Ensure all entities belong to the given seating area's room."""
+    if room.room_id != seating_area.room_id:
+        raise ValueError(
+            f"room.room_id {room.room_id} does not match "
+            f"seating area '{seating_area.name}' room_id {seating_area.room_id}"
+        )
+    if occupancy.room_id != seating_area.room_id:
+        raise ValueError(
+            f"occupancy.room_id {occupancy.room_id} does not match "
+            f"seating area '{seating_area.name}' room_id {seating_area.room_id}"
+        )
     for appliance in appliances:
-        if appliance.room_id != room.room_id:
-            raise ValueError(f"appliance {appliance.appliance_id} is not in room {room.room_id}")
+        if appliance.room_id != seating_area.room_id:
+            raise ValueError(
+                f"appliance {appliance.appliance_id} has room_id {appliance.room_id}, "
+                f"expected {seating_area.room_id} for '{seating_area.name}'"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Appliance state helpers
+# ---------------------------------------------------------------------------
 
 
 def _decide_appliance_state(
@@ -278,10 +411,8 @@ def _decide_appliance_state(
     - For adjustable devices, level is 1-10 (10 = full power).
     - For non-adjustable devices, level is None.
     """
-
     appliance_type = appliance.appliance_type.upper()
 
-    # Basic presence requirements per type.
     if people < 1 and appliance_type in {"LIGHT", "FAN"}:
         return False, None, 0
     if people < 2 and appliance_type == "AC":
@@ -292,7 +423,6 @@ def _decide_appliance_state(
     if not appliance.adjustable:
         return True, None, units_on
 
-    # Adjustable: map occupancy load to a discrete level 1-10.
     per_unit_cap = PEOPLE_PER_UNIT.get(appliance_type, 1)
     load_per_unit = min(1.0, people / (units_on * per_unit_cap)) if units_on else 0
     level = _clamp_level(round(load_per_unit * 10))
@@ -301,32 +431,20 @@ def _decide_appliance_state(
 
 def _estimate_power(appliance: Appliance, level: Optional[int], units_on: int) -> int:
     """Estimate power draw in watts for the appliance recommendation."""
-
     units = max(1, units_on)
-
     if appliance.adjustable and level:
-        # Linear scaling with the level (1-10).
         per_unit = appliance.max_power_watts * (level / 10)
         return int(per_unit * units)
-
-    # Non-adjustable or level None: assume full draw when ON.
     return appliance.max_power_watts * units
 
 
 def _apply_temperature_bias(level: int, outside_temp_c: Optional[float]) -> int:
     """Nudge the level based on outdoor temperature.
 
-    Simple heuristic:
-    - Very hot (>= 32C): +2
-    - Warm (>= 28C): +1
-    - Cool (<= 22C): -1
-    - Cold (<= 18C): -2
+    Very hot (>= 32C): +2 | Warm (>= 28C): +1 | Cool (<= 22C): -1 | Cold (<= 18C): -2
     """
-
     if outside_temp_c is None:
         return level
-
-    bias = 0
     if outside_temp_c >= 32:
         bias = 2
     elif outside_temp_c >= 28:
@@ -335,7 +453,8 @@ def _apply_temperature_bias(level: int, outside_temp_c: Optional[float]) -> int:
         bias = -2
     elif outside_temp_c <= 22:
         bias = -1
-
+    else:
+        bias = 0
     return _clamp_level(level + bias)
 
 
@@ -347,20 +466,24 @@ def _compute_units_on(appliance_type: str, available_units: int, people: int) ->
     return max(1, min(available_units, needed))
 
 
+def _clamp_level(level: int) -> int:
+    return max(1, min(10, level))
+
+
 def _get_first_available_conditions(providers: Sequence[object]) -> Optional[WeatherConditions]:
     """Return the first successful weather conditions from a provider list."""
     for provider in providers:
         getter = getattr(provider, "get_current_conditions", None)
-        if not callable(getter):
-            continue
-        conditions = getter()
-        if conditions:
-            return conditions
+        if callable(getter):
+            conditions = getter()
+            if conditions:
+                return conditions
     return None
 
 
-def _clamp_level(level: int) -> int:
-    return max(1, min(10, level))
+# ---------------------------------------------------------------------------
+# Demo / CLI entry point
+# ---------------------------------------------------------------------------
 
 
 def _load_demo_payload() -> Optional[Dict[str, Any]]:
@@ -402,14 +525,14 @@ def _load_demo_payload() -> Optional[Dict[str, Any]]:
 
 def _parse_room(data: Dict[str, Any]) -> Room:
     return Room(
-        room_id=int(data["room_id"]),
+        room_id=MTA_1.room_id,          # hardcoded to MTA_1
         max_capacity=int(data["max_capacity"]),
     )
 
 
 def _parse_occupancy(data: Dict[str, Any]) -> Occupancy:
     return Occupancy(
-        room_id=int(data["room_id"]),
+        room_id=MTA_1.room_id,          # hardcoded to MTA_1
         people_count=int(data["people_count"]),
         detected_at=str(data.get("detected_at") or datetime.now(timezone.utc).isoformat()),
         confidence=float(data.get("confidence", 1.0)),
@@ -419,7 +542,7 @@ def _parse_occupancy(data: Dict[str, Any]) -> Occupancy:
 def _parse_appliance(data: Dict[str, Any]) -> Appliance:
     return Appliance(
         appliance_id=int(data["appliance_id"]),
-        room_id=int(data["room_id"]),
+        room_id=MTA_1.room_id,          # hardcoded to MTA_1
         appliance_type=str(data["appliance_type"]),
         max_power_watts=int(data.get("max_power_watts") or 60),
         adjustable=bool(data.get("adjustable", True)),
@@ -427,21 +550,14 @@ def _parse_appliance(data: Dict[str, Any]) -> Appliance:
     )
 
 
-# ---------------------------------------------------------------------------
-# Demo usage with mocked data
-# ---------------------------------------------------------------------------
-
-
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    # Demo input is now external to avoid hardcoded values.
-    # Provide either DEMO_INPUT_JSON (inline JSON string) or DEMO_INPUT_FILE (path to JSON).
     demo_payload = _load_demo_payload()
     if not demo_payload:
         raise SystemExit(
-            "Set DEMO_INPUT_JSON or DEMO_INPUT_FILE with room, occupancy, appliances, "
-            "and optional latitude/longitude"
+            "Set DEMO_INPUT_JSON or DEMO_INPUT_FILE with room (max_capacity), "
+            "occupancy, appliances, and optional latitude/longitude"
         )
 
     room = _parse_room(demo_payload["room"])
@@ -466,18 +582,22 @@ if __name__ == "__main__":
         occupancy,
         appliances,
         outside_temp_c=outside_temp_c,
+        seating_area=MTA_1,
     )
 
     total_power = sum(r.estimated_power_watts for r in recommendations)
 
-    print("Recommendations for room", room.room_id)
-    print("People:", occupancy.people_count, "/", room.max_capacity)
-    print("Outside temp (C):", outside_temp_c)
-    print("Confidence:", occupancy.confidence)
+    print(f"Seating area : {MTA_1.name}")
+    print(f"Room ID      : {MTA_1.room_id}")
+    print(f"People       : {occupancy.people_count} / {room.max_capacity}")
+    print(f"Outside temp : {outside_temp_c}°C")
+    print(f"Confidence   : {occupancy.confidence}")
     print("--")
     for rec in recommendations:
+        setpoint_str = f", setpoint={rec.setpoint_c:.0f}°C" if rec.setpoint_c is not None else ""
         print(
-            f"{rec.appliance_id}: status={rec.status}, "
-            f"level={rec.level}, estimated_power={rec.estimated_power_watts} W"
+            f"  {rec.appliance_id} ({rec.appliance_type}): "
+            f"status={rec.status}, level={rec.level}{setpoint_str}, "
+            f"power={rec.estimated_power_watts}W"
         )
-    print("Total estimated power:", total_power, "W")
+    print(f"Total estimated power: {total_power}W")
