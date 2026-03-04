@@ -54,7 +54,7 @@ MODEL_PATH = Path(__file__).parent / "yolov8n.pt"
 model = YOLO(str(MODEL_PATH))
 
 # ---------------------------------------------------------------------------
-# In-memory zone states for temporal persistence (replaces Supabase)
+# In-memory zone states for temporal persistence
 # ---------------------------------------------------------------------------
 _zone_states: Dict[str, dict] = {}
 
