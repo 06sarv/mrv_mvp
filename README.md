@@ -28,12 +28,12 @@ Zone-based energy optimization system for Mahindra Research Valley. Uses real-ti
 ```bash
 cd Power-Optimizer-API-main
 
-python3 -m venv venv
+python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 
 pip install -r requirements.txt
 
-python3 -m uvicorn app:app --reload --port 8000
+python -m uvicorn app:app --reload --port 8000
 ```
 
 The YOLO model (`yolov8n.pt`) will be downloaded automatically on first detection request.
@@ -81,7 +81,9 @@ Mahindra-Sneha/
 │   ├── config.json                  # Zone polygon definitions
 │   ├── yolov8n.pt                   # YOLOv8 model weights
 │   ├── requirements.txt
-│   └── Procfile
+│   ├── Procfile
+│   └── tests/                       # Unit tests
+│       └── test_zone_utils.py
 ├── smart-energy-dashboard/          # Frontend
 │   ├── src/
 │   │   ├── components/
