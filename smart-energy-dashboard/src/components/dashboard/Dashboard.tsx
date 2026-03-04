@@ -1,61 +1,48 @@
-import React, { useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import React from 'react';
+import { Users, Zap, Activity } from 'lucide-react';
+import VideoFeedWidget from './VideoFeedWidget';
+import ZoneStatusPanel from './ZoneStatusPanel';
+import { useEnergy } from '../../context/EnergyContext';
 
-import OptimizationSection from './OptimizationSection';
-
-const Dashboard: React.FC<{ onNavigate: (view: string, roomId?: string) => void }> = ({ onNavigate }) => {
-    // Left occupancyLevel here in case we want to use it later,
-    // but the variable was unused in the previous truncated version.
-    // To suppress the warning, we can either remove it or use it.
-    // For now, removing it to be clean.
-    // const { occupancyLevel } = useEnergy();
-
-    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-    const [selectedFacility, setSelectedFacility] = useState('Main Facility Zone 1');
-    const facilities = ['Main Facility Zone 1', 'Main Facility Zone 2', 'Annex Building'];
+const Dashboard: React.FC = () => {
+    const { peopleCount, totalPowerWatts, zonesOccupied, zonesTotal, zoneStates } = useEnergy();
 
     return (
-        <div className="space-y-6">
-            <header className="flex justify-between items-end mb-6">
-                <div>
-                    <h1 className="text-2xl font-bold text-slate-900">Alerts & Suggestions</h1>
+        <div className="space-y-6 h-full">
+            <div className="flex flex-col lg:flex-row gap-6 h-full">
+                {/* Left: Video Feed */}
+                <div className="lg:w-2/3">
+                    <VideoFeedWidget />
+                </div>
 
-                    <div className="mt-2 relative">
-                        <button
-                            onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                            className="bg-white border border-slate-200 shadow-sm pr-10 pl-3 py-2 text-sm font-medium text-slate-700 rounded-lg cursor-pointer focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all hover:border-slate-300 hover:shadow flex items-center min-w-[200px] text-left relative"
-                        >
-                            <span>{selectedFacility}</span>
-                            <ChevronDown className={`absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 transition-transform duration-300 ${isDropdownOpen ? 'rotate-180' : ''}`} />
-                        </button>
-
-                        <div className={`absolute top-full left-0 mt-2 w-full bg-white border border-slate-100 rounded-xl shadow-xl z-50 overflow-hidden transition-all duration-200 origin-top ${isDropdownOpen ? 'opacity-100 scale-100 translate-y-0' : 'opacity-0 scale-95 -translate-y-2 pointer-events-none'}`}>
-                            {facilities.map((facility) => (
-                                <button
-                                    key={facility}
-                                    onClick={() => {
-                                        setSelectedFacility(facility);
-                                        setIsDropdownOpen(false);
-                                    }}
-                                    className={`w-full text-left px-4 py-3 text-sm transition-colors hover:bg-slate-50 flex items-center justify-between ${selectedFacility === facility ? 'text-blue-600 font-medium bg-blue-50/50' : 'text-slate-600'}`}
-                                >
-                                    {facility}
-                                    {selectedFacility === facility && (
-                                        <div className="w-1.5 h-1.5 rounded-full bg-blue-600" />
-                                    )}
-                                </button>
-                            ))}
+                {/* Right: Zone Status */}
+                <div className="lg:w-1/3 flex flex-col gap-4">
+                    {/* Summary cards */}
+                    <div className="grid grid-cols-3 gap-3">
+                        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-3 text-center">
+                            <Users className="w-4 h-4 text-blue-500 mx-auto mb-1" />
+                            <p className="text-2xl font-bold text-slate-900">{peopleCount}</p>
+                            <p className="text-[10px] text-slate-500 uppercase tracking-wider">People</p>
+                        </div>
+                        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-3 text-center">
+                            <Activity className="w-4 h-4 text-green-500 mx-auto mb-1" />
+                            <p className="text-2xl font-bold text-slate-900">{zonesOccupied}<span className="text-sm text-slate-400">/{zonesTotal}</span></p>
+                            <p className="text-[10px] text-slate-500 uppercase tracking-wider">Zones Active</p>
+                        </div>
+                        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-3 text-center">
+                            <Zap className="w-4 h-4 text-amber-500 mx-auto mb-1" />
+                            <p className="text-2xl font-bold text-slate-900">{totalPowerWatts}<span className="text-sm text-slate-400">W</span></p>
+                            <p className="text-[10px] text-slate-500 uppercase tracking-wider">Power</p>
                         </div>
                     </div>
-                </div>
-                <div className="flex gap-3">
 
+                    {/* Zone panel */}
+                    <div className="flex-1 overflow-y-auto">
+                        <ZoneStatusPanel zoneStates={zoneStates} />
+                    </div>
                 </div>
-            </header >
-
-            {/* Room Optimization Cards */}
-            < OptimizationSection onNavigate={onNavigate} />
-        </div >
+            </div>
+        </div>
     );
 };
 
