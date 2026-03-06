@@ -1,11 +1,14 @@
 {
   "room_name": "MRV Open Plan Office",
-  "persistence_delay_sec": 10,
+  "reference_resolution": [3840, 2160],
+  "persistence_delay_sec": 3,
+  "confidence_threshold": 0.30,
+  "nearest_zone_fallback_px": 200,
   "zones": [
     {
       "zone_id": "zone-1",
       "zone_name": "Front Table",
-      "polygon": [[0.22, 0.60], [0.52, 0.60], [0.52, 0.99], [0.22, 0.99]],
+      "bbox": [500, 1350, 1300, 2100],
       "fan_count": 1,
       "light_count": 1,
       "fan_power_watts": 75,
@@ -13,8 +16,8 @@
     },
     {
       "zone_id": "zone-2",
-      "zone_name": "Left Table",
-      "polygon": [[0.03, 0.38], [0.22, 0.38], [0.22, 0.65], [0.03, 0.65]],
+      "zone_name": "Left-Center Table",
+      "bbox": [200, 850, 1100, 1300],
       "fan_count": 1,
       "light_count": 1,
       "fan_power_watts": 75,
@@ -22,8 +25,8 @@
     },
     {
       "zone_id": "zone-3",
-      "zone_name": "Center-Left Table",
-      "polygon": [[0.22, 0.25], [0.44, 0.25], [0.44, 0.55], [0.22, 0.55]],
+      "zone_name": "Right Table",
+      "bbox": [3000, 800, 3750, 1350],
       "fan_count": 1,
       "light_count": 1,
       "fan_power_watts": 75,
@@ -32,7 +35,7 @@
     {
       "zone_id": "zone-4",
       "zone_name": "Center-Right Table",
-      "polygon": [[0.44, 0.25], [0.66, 0.25], [0.66, 0.55], [0.44, 0.55]],
+      "bbox": [2150, 850, 2950, 1350],
       "fan_count": 1,
       "light_count": 1,
       "fan_power_watts": 75,
@@ -40,8 +43,26 @@
     },
     {
       "zone_id": "zone-5",
-      "zone_name": "Right Table",
-      "polygon": [[0.66, 0.26], [0.88, 0.26], [0.88, 0.60], [0.66, 0.60]],
+      "zone_name": "Center-Left Table",
+      "bbox": [1150, 850, 2100, 1350],
+      "fan_count": 1,
+      "light_count": 1,
+      "fan_power_watts": 75,
+      "light_power_watts": 40
+    },
+    {
+      "zone_id": "zone-6",
+      "zone_name": "Front-Right Round Table",
+      "bbox": [2300, 1350, 3500, 2100],
+      "fan_count": 1,
+      "light_count": 1,
+      "fan_power_watts": 75,
+      "light_power_watts": 40
+    },
+    {
+      "zone_id": "zone-7",
+      "zone_name": "Central Standing Table",
+      "bbox": [1350, 1400, 2250, 2160],
       "fan_count": 1,
       "light_count": 1,
       "fan_power_watts": 75,

@@ -21,7 +21,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from ultralytics import YOLO
 
-from zone_utils import apply_temporal_persistence, evaluate_zones
+from zone_utils import (
+    apply_temporal_persistence,
+    bbox_to_normalized_polygon,
+    evaluate_zones,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -45,7 +49,10 @@ def _load_config() -> Dict[str, Any]:
 
 CONFIG = _load_config()
 ZONES: List[dict] = CONFIG.get("zones", [])
-PERSISTENCE_DELAY: int = CONFIG.get("persistence_delay_sec", 30)
+PERSISTENCE_DELAY: int = CONFIG.get("persistence_delay_sec", 3)
+CONFIDENCE_THRESHOLD: float = CONFIG.get("confidence_threshold", 0.45)
+REF_RESOLUTION: List[int] = CONFIG.get("reference_resolution", [3840, 2160])
+FALLBACK_PX: float = CONFIG.get("nearest_zone_fallback_px", 200.0)
 
 # ---------------------------------------------------------------------------
 # YOLO model
@@ -84,19 +91,40 @@ async def health():
 
 @app.get("/zones")
 async def get_zones():
-    """Return zone configuration for frontend overlay rendering."""
-    return {"zones": ZONES}
+    """Return zone configuration for frontend overlay rendering.
+
+    Pixel bboxes are converted to normalised polygons so the frontend can
+    render overlays at any display resolution.
+    """
+    ref_w, ref_h = REF_RESOLUTION
+    out = []
+    for z in ZONES:
+        out.append({
+            **z,
+            "polygon": bbox_to_normalized_polygon(z["bbox"], ref_w, ref_h),
+        })
+    return {"zones": out}
 
 
 @app.post("/detect")
 async def detect(image: UploadFile = File(...)):
-    """Accept a single frame, run YOLO person detection, evaluate zones, return auto ON/OFF states."""
+    """Accept a single frame, run YOLO person detection, evaluate zones.
+
+    Detection pipeline
+    ------------------
+    1. YOLO inference on the uploaded frame.
+    2. Filter to ``person`` class with confidence >= threshold.
+    3. Skip tiny boxes (likely artefacts / plants).
+    4. For each surviving detection compute the **foot-point** (bottom-center).
+    5. Assign each person to a zone (containment → nearest-center fallback).
+    6. Apply temporal smoothing so brief detection gaps don't flicker the UI.
+    """
     try:
         contents = await image.read()
         img = Image.open(io.BytesIO(contents))
         frame_w, frame_h = img.size
 
-        # Run YOLO inference
+        # ---- YOLO inference ----
         results = model(img)
 
         detections: List[dict] = []
@@ -106,18 +134,16 @@ async def detect(image: UploadFile = File(...)):
             for box in result.boxes:
                 cls_id = int(box.cls[0])
                 conf = float(box.conf[0])
-                if cls_id != 0 or conf < 0.55:  # person class only, higher threshold
+                # Person class only, configurable confidence threshold
+                if cls_id != 0 or conf < CONFIDENCE_THRESHOLD:
                     continue
+
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 box_w = x2 - x1
                 box_h = y2 - y1
-                center_y_norm = ((y1 + y2) / 2) / frame_h
 
-                # Skip detections in the top 25% of frame (ceiling: fans, lights, AC)
-                if center_y_norm < 0.25:
-                    continue
-                # Skip tiny boxes (plants, artifacts) — person bbox should be
-                # at least 3% of frame width and 5% of frame height
+                # Skip tiny boxes (plants, artefacts) — person bbox should be
+                # at least 3 % of frame width and 5 % of frame height
                 if box_w < frame_w * 0.03 or box_h < frame_h * 0.05:
                     continue
 
@@ -128,10 +154,14 @@ async def detect(image: UploadFile = File(...)):
                     "bbox": [int(x1), int(y1), int(x2), int(y2)],
                 })
 
-        # Evaluate which zones have people
-        zone_presence = evaluate_zones(detections, ZONES, frame_w, frame_h)
+        # ---- Zone assignment (foot-point) ----
+        zone_presence = evaluate_zones(
+            detections, ZONES, frame_w, frame_h,
+            ref_resolution=REF_RESOLUTION,
+            max_fallback_px=FALLBACK_PX,
+        )
 
-        # Build state list from in-memory store for temporal persistence
+        # ---- Temporal smoothing ----
         now = datetime.now(timezone.utc)
         mem_states = []
         for zone in ZONES:
@@ -144,10 +174,10 @@ async def detect(image: UploadFile = File(...)):
                 "delay_sec": zone.get("delay_sec", PERSISTENCE_DELAY),
             })
 
-        # Apply temporal persistence
         persisted = apply_temporal_persistence(zone_presence, mem_states, now)
 
-        # Update in-memory state and build response
+        # ---- Build response ----
+        ref_w, ref_h = REF_RESOLUTION
         zone_results: List[dict] = []
         total_power = 0
         zones_occupied = 0
@@ -168,7 +198,7 @@ async def detect(image: UploadFile = File(...)):
             zone_results.append({
                 "zone_id": zid,
                 "zone_name": zone["zone_name"],
-                "polygon": zone["polygon"],
+                "polygon": bbox_to_normalized_polygon(zone["bbox"], ref_w, ref_h),
                 "is_occupied": state["is_occupied"],
                 "last_detected": state["last_detected"],
                 "appliance_state": state["appliance_state"],
